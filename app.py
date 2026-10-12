@@ -87,8 +87,21 @@ def generate(v:Video,authorization:str|None=Header(default=None)):
         txt=script_for(v)
         if len(txt.split())>180:txt=" ".join(txt.split()[:180])
         name=("pl-PL-ZofiaNeural" if v.voice=="female" else "pl-PL-MarekNeural") if v.lang=="pl" else ("en-US-JennyNeural" if v.voice=="female" else "en-US-GuyNeural")
-        try:asyncio.run(edge_tts.Communicate(txt,name).save(str(audio)))
-        except Exception:raise HTTPException(503,"Neural TTS unavailable, no robotic fallback")
+        import time, logging
+        errors=[]
+        for attempt in range(3):
+            try:
+                asyncio.run(edge_tts.Communicate(txt,name,connect_timeout=15,receive_timeout=45).save(str(audio)))
+                if not audio.exists() or audio.stat().st_size < 1500:
+                    raise RuntimeError("TTS returned no audio")
+                break
+            except Exception as exc:
+                errors.append(f"{type(exc).__name__}: {str(exc)[:240]}")
+                logging.exception("Neural TTS failed, attempt %d/3",attempt+1)
+                audio.unlink(missing_ok=True)
+                if attempt<2:time.sleep(2*(attempt+1))
+        else:
+            raise HTTPException(503,"Neural TTS provider unavailable. Check Railway deploy logs for detailed cause; try again later.")
         p=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",str(audio)],capture_output=True,text=True,timeout=15,check=True)
         duration=min(110,max(5,float(p.stdout.strip())+.3))
         subtitles(txt,duration,sub)
